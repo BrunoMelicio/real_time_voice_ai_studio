@@ -139,10 +139,54 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
 ### External APIs
 
-| API | Purpose | Free Tier |
-|-----|---------|-----------|
-| Groq API | LLM (llama-3.1-8b-instant) | Yes, with daily limits |
-| Groq Whisper | Speech-to-text | Yes, with daily limits |
+| API | Model | Purpose | Cost |
+|-----|-------|---------|------|
+| Groq LLM | `llama-3.1-8b-instant` | Chat responses | Free tier with limits |
+| Groq Whisper | `distil-whisper-large-v3-en` | Speech-to-text | Lowest rate usage |
+
+**Note**: We use `distil-whisper-large-v3-en` instead of larger models to minimize API rate usage.
+
+## Security
+
+### Critical Security Principles
+
+**NEVER commit secrets to the repository.** This includes:
+- API keys (Groq, OpenAI, etc.)
+- Passwords and tokens
+- Private keys or certificates
+- Database connection strings
+
+### Environment Variables
+
+All sensitive configuration MUST be stored in environment variables:
+
+```bash
+# .env file (NEVER commit this file)
+GROQ_API_KEY=gsk_xxxxxxxxxxxx
+```
+
+### Security Checklist
+
+- [ ] `.env` is in `.gitignore` (prevents accidental commits)
+- [ ] Only `.env.example` with placeholder values is committed
+- [ ] API keys are loaded via `os.getenv()` or `python-dotenv`
+- [ ] No hardcoded secrets in source code
+- [ ] No secrets in comments or documentation
+
+### When Adding New APIs
+
+1. Add the variable name to `.env.example` with a placeholder
+2. Document the variable in this file's Configuration section
+3. Load via `os.getenv("VARIABLE_NAME")` in code
+4. Handle missing keys gracefully (check if None before use)
+
+### What to Avoid
+
+- **NEVER** hardcode API keys: `client = Groq(api_key="gsk_xxx")`
+- **NEVER** commit `.env` files
+- **NEVER** log or print API keys
+- **NEVER** expose keys in error messages or responses
+- **NEVER** store keys in frontend JavaScript
 
 ## Configuration
 
@@ -201,6 +245,9 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 - Don't split the frontend into multiple files unnecessarily
 - Don't store sensitive data in conversation history
 - Don't remove the health check endpoint
+- **NEVER hardcode API keys or secrets in code**
+- **NEVER commit .env files or expose credentials**
+- Don't log sensitive data (API keys, user audio, etc.)
 
 ## Troubleshooting
 

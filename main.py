@@ -81,7 +81,7 @@ def speech_to_text(audio_data: bytes, filename: str = "audio.webm") -> str:
 
     transcription = groq_client.audio.transcriptions.create(
         file=(filename, audio_data),
-        model="whisper-large-v3-turbo",
+        model="distil-whisper-large-v3-en",  # Smaller model, lower rate usage
         response_format="text",
     )
 
