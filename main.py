@@ -8,9 +8,10 @@ import io
 import base64
 import tempfile
 import threading
+import subprocess
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
@@ -21,8 +22,23 @@ load_dotenv()
 
 app = FastAPI(title="Voice Chat MVP")
 
+@app.middleware("http")
+async def log_and_no_cache(request: Request, call_next):
+    ua = request.headers.get("user-agent", "")
+    print(f"[REQ] {request.method} {request.url.path} | UA: {ua}")
+    response = await call_next(request)
+    # Prevent aggressive browser caching of static HTML and API responses
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Configuration
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3-turbo")
 
 # Initialize Groq client
 groq_client = None
@@ -62,6 +78,25 @@ def text_to_speech(text: str) -> bytes:
             with open(temp_path, "rb") as f:
                 audio_data = f.read()
 
+            # On macOS, pyttsx3 writes AIFF-C format even with .wav extension.
+            # Convert to standard PCM WAV using afconvert if available for browser compatibility.
+            if audio_data.startswith(b'FORM'):
+                wav_converted = temp_path + ".converted.wav"
+                try:
+                    subprocess.run(
+                        ["afconvert", "-f", "WAVE", "-d", "LEI16", temp_path, wav_converted],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    with open(wav_converted, "rb") as f:
+                        audio_data = f.read()
+                except Exception:
+                    pass
+                finally:
+                    if os.path.exists(wav_converted):
+                        os.remove(wav_converted)
+
             return audio_data
         finally:
             # Cleanup
@@ -75,17 +110,16 @@ def speech_to_text(audio_data: bytes, filename: str = "audio.webm") -> str:
     if not groq_client:
         raise HTTPException(status_code=500, detail="Groq API key not configured")
 
-    # Create a file-like object
-    audio_file = io.BytesIO(audio_data)
-    audio_file.name = filename
-
-    transcription = groq_client.audio.transcriptions.create(
-        file=(filename, audio_data),
-        model="distil-whisper-large-v3-en",  # Smaller model, lower rate usage
-        response_format="text",
-    )
-
-    return transcription
+    try:
+        transcription = groq_client.audio.transcriptions.create(
+            file=(filename, audio_data),
+            model=WHISPER_MODEL,
+            response_format="text",
+        )
+        return str(transcription).strip()
+    except Exception as e:
+        print(f"Speech-to-text error: {e}")
+        return ""
 
 
 def get_llm_response(user_message: str, use_history: bool = True) -> str:
@@ -110,7 +144,7 @@ def get_llm_response(user_message: str, use_history: bool = True) -> str:
 
     # Get response
     completion = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=LLM_MODEL,
         messages=messages,
         temperature=0.7,
         max_tokens=500,
@@ -129,7 +163,14 @@ def get_llm_response(user_message: str, use_history: bool = True) -> str:
 @app.get("/")
 async def root():
     """Serve the main page."""
-    return FileResponse("static/index.html")
+    return FileResponse(
+        "static/index.html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/health")
@@ -188,6 +229,16 @@ async def voice_chat(audio: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Empty audio file")
 
     user_text = speech_to_text(audio_data, audio.filename or "audio.webm")
+    user_text = user_text.strip() if user_text else ""
+
+    if not user_text:
+        return {
+            "user_text": "",
+            "response_text": "",
+            "response_audio": "",
+            "audio_format": "wav",
+            "empty": True,
+        }
 
     # 2. Get LLM response
     response_text = get_llm_response(user_text)
@@ -200,7 +251,8 @@ async def voice_chat(audio: UploadFile = File(...)):
         "user_text": user_text,
         "response_text": response_text,
         "response_audio": audio_base64,
-        "audio_format": "wav"
+        "audio_format": "wav",
+        "empty": False,
     }
 
 
@@ -274,4 +326,5 @@ async def websocket_chat(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
